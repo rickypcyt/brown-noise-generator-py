@@ -9,12 +9,13 @@ class BrownNoiseGenerator:
         # Set up the main window
         self.root = tk.Tk()
         self.root.title("Brown Noise Generator")
-        self.root.geometry("300x250")
+        # Increase height to accommodate extra presets buttons
+        self.root.geometry("300x350")
         
         # Audio settings
         self.sample_rate = 48000
         self.device = 4  # Change this to your desired device ID
-        self.is_playing = False
+        self.is_playing = False  # Start with playback off
         self.volume = 0.5
 
         # We use a one‐pole leaky integrator to produce brown noise.
@@ -27,7 +28,7 @@ class BrownNoiseGenerator:
         self.bass_level = 100  
         self.update_leak_from_bass(self.bass_level)
         
-        # Create the GUI
+        # Create the GUI elements
         self.create_gui()
 
     def create_gui(self):
@@ -41,7 +42,7 @@ class BrownNoiseGenerator:
             orient="horizontal",
             command=self.update_volume
         )
-        self.volume_slider.set(50)
+        self.volume_slider.set(50)  # 50% volume by default
         self.volume_slider.pack(fill="x")
         
         # --- Bass Level (affects noise “color”) ---
@@ -54,8 +55,33 @@ class BrownNoiseGenerator:
             orient="horizontal",
             command=self.update_bass
         )
-        self.bass_slider.set(100)
+        self.bass_slider.set(100)  # Default is Neutral
         self.bass_slider.pack(fill="x")
+        
+        # --- Presets ---
+        presets_frame = ttk.LabelFrame(self.root, text="Presets", padding="10")
+        presets_frame.pack(fill="x", padx=10, pady=5)
+        
+        # Preset buttons:
+        # Bright: Lower bass slider value → less integration, more high–frequency content.
+        bright_button = ttk.Button(presets_frame, text="Bright", 
+                                   command=lambda: self.set_preset(20))
+        bright_button.pack(side="left", expand=True, padx=5, pady=5)
+        
+        # Neutral: Mid value for a balanced sound.
+        neutral_button = ttk.Button(presets_frame, text="Neutral", 
+                                    command=lambda: self.set_preset(100))
+        neutral_button.pack(side="left", expand=True, padx=5, pady=5)
+        
+        # Deep: Higher bass slider value → more integration, smoother, deeper noise.
+        deep_button = ttk.Button(presets_frame, text="Deep", 
+                                 command=lambda: self.set_preset(200))
+        deep_button.pack(side="left", expand=True, padx=5, pady=5)
+        
+        # Random: Sets the bass slider to a random value between 20 and 200.
+        random_button = ttk.Button(presets_frame, text="Random", 
+                                   command=self.random_preset)
+        random_button.pack(side="left", expand=True, padx=5, pady=5)
         
         # --- Play/Stop button ---
         self.play_button = ttk.Button(
@@ -76,9 +102,10 @@ class BrownNoiseGenerator:
         self.volume = float(value) / 100.0
 
     def update_bass(self, value):
+        # Convert value to float (it may come as a string from the slider)
         self.bass_level = float(value)
         self.update_leak_from_bass(self.bass_level)
-        # (Optional) Reset the filter state if needed:
+        # (Optional) Reset the filter state if you want the noise to restart:
         # self.zi = np.array([0], dtype=np.float32)
     
     def update_leak_from_bass(self, bass_value):
@@ -86,13 +113,26 @@ class BrownNoiseGenerator:
         Map the bass slider value (20–200) to a leak coefficient.
         When leak is close to 1, the integrator is “tighter” (more integration) 
         and the noise has a deeper, smoother quality.
-        You can adjust the mapping as desired.
+        
+        For example, we map:
+          - bass_value=20   → leak=0.95 (bright sound)
+          - bass_value=200  → leak=0.999 (deep, smooth noise)
         """
-        # For example, map bass_value=20 → leak=0.95 and bass_value=200 → leak=0.999.
         self.leak = np.interp(bass_value, [20, 200], [0.95, 0.999])
         # Precompute filter coefficients for the one–pole filter:
         self.b_coef = np.array([1 - self.leak], dtype=np.float32)
         self.a_coef = np.array([1, -self.leak], dtype=np.float32)
+    
+    def set_preset(self, value):
+        """Set the bass slider to a preset value and update accordingly."""
+        self.bass_slider.set(value)
+        self.update_bass(value)
+    
+    def random_preset(self):
+        """Set a random bass value between 20 and 200."""
+        value = np.random.uniform(20, 200)
+        self.bass_slider.set(value)
+        self.update_bass(value)
     
     def audio_callback(self, outdata, frames, time, status):
         if status:
@@ -100,13 +140,11 @@ class BrownNoiseGenerator:
         
         # Generate a block of white noise samples (float32)
         white = np.random.randn(frames).astype(np.float32)
-        # Pass them through the one–pole leaky integrator.
-        # This function is fast (implemented in C) and returns both the filtered
-        # output and the updated filter state (self.zi) for continuity.
+        # Pass the white noise through the one–pole leaky integrator.
+        # signal.lfilter returns both the filtered output and the updated filter state.
         brown, self.zi = signal.lfilter(self.b_coef, self.a_coef, white, zi=self.zi)
         
-        # Apply the volume control and send the block to the output.
-        # (The brown noise generated here is already “colored” by the filter.)
+        # Apply volume and send the data to the output stream.
         outdata[:] = (brown * self.volume).reshape(-1, 1)
     
     def toggle_playback(self):
@@ -119,7 +157,7 @@ class BrownNoiseGenerator:
                 channels=1,
                 callback=self.audio_callback,
                 device=self.device,
-                blocksize=2048,  # A larger block size can improve stability
+                blocksize=2048,  # Larger block size can improve stability
                 latency='high'
             )
             self.stream.start()
